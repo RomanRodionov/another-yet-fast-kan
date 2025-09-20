@@ -39,12 +39,12 @@ class RadialBasisFunction(nn.Module):
         self.grid_min = grid_min
         self.grid_max = grid_max
         self.num_grids = num_grids
-        grid = torch.linspace(grid_min, grid_max, num_grids)
-        self.grid = torch.nn.Parameter(grid, requires_grad=False)
-        self.denominator = denominator or (grid_max - grid_min) / (num_grids - 1)
+        self.register_buffer("grid", torch.linspace(grid_min, grid_max, num_grids))
+        denominator = denominator or (grid_max - grid_min) / (num_grids - 1)
+        self.register_buffer("denom_inv", torch.tensor(1.0 / denominator))
 
     def forward(self, x):
-        return torch.exp(-((x[..., None] - self.grid) / self.denominator) ** 2)
+        return torch.exp(-((x[..., None] - self.grid) * self.denom_inv).square())
 
 class FastKANLayer(nn.Module):
     def __init__(
@@ -55,7 +55,7 @@ class FastKANLayer(nn.Module):
         grid_max: float = 2.,
         num_grids: int = 8,
         use_base_update: bool = True,
-        use_layernorm: bool = True,
+        use_layernorm: bool = False,
         base_activation = F.silu,
         spline_weight_init_scale: float = 0.1,
     ) -> None:
@@ -73,12 +73,12 @@ class FastKANLayer(nn.Module):
             self.base_activation = base_activation
             self.base_linear = nn.Linear(input_dim, output_dim)
 
-    def forward(self, x, use_layernorm=True):
+    def forward(self, x, use_layernorm=False):
         if self.layernorm is not None and use_layernorm:
             spline_basis = self.rbf(self.layernorm(x))
         else:
             spline_basis = self.rbf(x)
-        ret = self.spline_linear(spline_basis.view(*spline_basis.shape[:-2], -1))
+        ret = self.spline_linear(spline_basis.reshape(*spline_basis.shape[:-2], -1))
         if self.use_base_update:
             base = self.base_linear(self.base_activation(x))
             ret = ret + base
@@ -143,6 +143,26 @@ class FastKAN(nn.Module):
         for layer in self.layers:
             x = layer(x)
         return x
+    
+    def save_raw(self, path):
+        with open(path, "wb") as f:
+            f.write("hydrann1".encode("utf-8"))
+            #layers = [x for x in self.decoder.children() if isinstance(x, nn.Linear)]
+            f.write(len(self.layers).to_bytes(4, "little"))
+            for layer in self.layers:
+                # write spline_linear weights (no bias)
+                spline_weight = np.ascontiguousarray(layer.spline_linear.weight.cpu().detach().numpy(), dtype=np.float32)
+                f.write(spline_weight.shape[0].to_bytes(4, "little"))
+                f.write(spline_weight.shape[1].to_bytes(4, "little"))
+                f.write(spline_weight.tobytes())
+
+                # write base_linear weights
+                base_weight = np.ascontiguousarray(layer.base_linear.weight.cpu().detach().numpy(), dtype=np.float32)
+                base_bias = np.ascontiguousarray(layer.base_linear.bias.cpu().detach().numpy(), dtype=np.float32)
+                f.write(base_weight.shape[0].to_bytes(4, "little"))
+                f.write(base_weight.shape[1].to_bytes(4, "little"))
+                f.write(base_weight.tobytes())
+                f.write(base_bias.tobytes())
 
 
 class AttentionWithFastKANTransform(nn.Module):
