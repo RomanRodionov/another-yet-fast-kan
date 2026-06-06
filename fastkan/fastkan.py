@@ -147,23 +147,31 @@ class FastKAN(nn.Module):
     
     def save_raw(self, path):
         with open(path, "wb") as f:
-            f.write("hydrann1".encode("utf-8"))
-            #layers = [x for x in self.decoder.children() if isinstance(x, nn.Linear)]
+            f.write("hydrann2kanbrdf\0".encode("utf-8"))
             f.write(len(self.layers).to_bytes(4, "little"))
+            len_offset = f.tell()
+            lens = []
+            f.write(('\0' * (4 * 4 * len(self.layers))).encode("utf-8")) # 4 ints per layer: rows0, cols0, rows1, cols1
+
             for layer in self.layers:
                 # write spline_linear weights (no bias)
                 spline_weight = np.ascontiguousarray(layer.spline_linear.weight.cpu().detach().numpy(), dtype=np.float32)
-                f.write(spline_weight.shape[0].to_bytes(4, "little"))
-                f.write(spline_weight.shape[1].to_bytes(4, "little"))
+                lens.append(spline_weight.shape[0])
+                lens.append(spline_weight.shape[1])
                 f.write(spline_weight.tobytes())
 
                 # write base_linear weights
                 base_weight = np.ascontiguousarray(layer.base_linear.weight.cpu().detach().numpy(), dtype=np.float32)
-                base_bias = np.ascontiguousarray(layer.base_linear.bias.cpu().detach().numpy(), dtype=np.float32)
-                f.write(base_weight.shape[0].to_bytes(4, "little"))
-                f.write(base_weight.shape[1].to_bytes(4, "little"))
+                base_bias = np.ascontiguousarray(layer.base_linear.bias.cpu().detach().numpy(), dtype=np.float32)                
+                lens.append(base_weight.shape[0])
+                lens.append(base_weight.shape[1])
                 f.write(base_weight.tobytes())
                 f.write(base_bias.tobytes())
+
+            f.seek(len_offset)   
+            for val in lens:
+                #print(val)
+                f.write(val.to_bytes(4, "little"))
 
 
 class AttentionWithFastKANTransform(nn.Module):
